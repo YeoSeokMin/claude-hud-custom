@@ -468,7 +468,7 @@ test('renderSessionLine omits usage when usageData is null', () => {
   assert.ok(!line.includes('7d:'), 'should not include 7d label');
 });
 
-test('renderSessionLine displays warning when API is unavailable', () => {
+test('renderSessionLine displays warning with failure reason when API is unavailable', () => {
   const ctx = baseContext();
   ctx.usageData = {
     planName: 'Max',
@@ -477,11 +477,12 @@ test('renderSessionLine displays warning when API is unavailable', () => {
     fiveHourResetAt: null,
     sevenDayResetAt: null,
     apiUnavailable: true,
+    failureReason: 'HTTP 429',
   };
   const line = renderSessionLine(ctx);
-  assert.ok(line.includes('usage:'), 'should show usage label');
-  assert.ok(line.includes('⚠'), 'should show warning indicator');
-  assert.ok(!line.includes('5h:'), 'should not show 5h when API unavailable');
+  assert.ok(line.includes('API'), 'should show API unavailable message');
+  assert.ok(line.includes('HTTP 429'), 'should show specific failure reason');
+  assert.ok(!line.includes('5시간'), 'should not show 5시간 when API unavailable');
 });
 
 test('renderSessionLine hides usage when showUsage config is false (hybrid toggle)', () => {

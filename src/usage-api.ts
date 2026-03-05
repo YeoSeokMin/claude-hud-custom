@@ -94,7 +94,7 @@ function writeCache(homeDir: string, data: UsageData, timestamp: number): void {
 // Dependency injection for testing
 export type UsageApiDeps = {
   homeDir: () => string;
-  fetchApi: (accessToken: string) => Promise<UsageApiResponse | null>;
+  fetchApi: (accessToken: string) => Promise<FetchResult>;
   now: () => number;
   readKeychain: (now: number, homeDir: string) => { accessToken: string; subscriptionType: string } | null;
 };
@@ -141,9 +141,10 @@ export async function getUsage(overrides: Partial<UsageApiDeps> = {}): Promise<U
     }
 
     // Fetch usage from API
-    const apiResponse = await deps.fetchApi(accessToken);
-    if (!apiResponse) {
+    const fetchResult = await deps.fetchApi(accessToken);
+    if ('error' in fetchResult) {
       // API call failed, cache the failure to prevent retry storms
+      debug('API fetch failed: %s', fetchResult.error);
       const failureResult: UsageData = {
         planName,
         fiveHour: null,
@@ -151,10 +152,13 @@ export async function getUsage(overrides: Partial<UsageApiDeps> = {}): Promise<U
         fiveHourResetAt: null,
         sevenDayResetAt: null,
         apiUnavailable: true,
+        failureReason: fetchResult.error,
       };
       writeCache(homeDir, failureResult, now);
       return failureResult;
     }
+
+    const apiResponse = fetchResult.response;
 
     // Parse response - API returns 0-100 percentage directly
     // Clamp to 0-100 and handle NaN/Infinity
@@ -381,7 +385,9 @@ function parseDate(dateStr: string | undefined): Date | null {
   return date;
 }
 
-function fetchUsageApi(accessToken: string): Promise<UsageApiResponse | null> {
+export type FetchResult = { response: UsageApiResponse } | { error: string };
+
+function fetchUsageApi(accessToken: string): Promise<FetchResult> {
   return new Promise((resolve) => {
     const options = {
       hostname: 'api.anthropic.com',
@@ -404,29 +410,30 @@ function fetchUsageApi(accessToken: string): Promise<UsageApiResponse | null> {
 
       res.on('end', () => {
         if (res.statusCode !== 200) {
-          debug('API returned non-200 status:', res.statusCode);
-          resolve(null);
+          debug('API returned status %d, body: %s', res.statusCode, data.slice(0, 200));
+          resolve({ error: `HTTP ${res.statusCode}` });
           return;
         }
 
         try {
           const parsed: UsageApiResponse = JSON.parse(data);
-          resolve(parsed);
+          resolve({ response: parsed });
         } catch (error) {
           debug('Failed to parse API response:', error);
-          resolve(null);
+          resolve({ error: 'parse_error' });
         }
       });
     });
 
     req.on('error', (error) => {
-      debug('API request error:', error);
-      resolve(null);
+      const msg = error instanceof Error ? error.message : String(error);
+      debug('API request error:', msg);
+      resolve({ error: `network: ${msg}` });
     });
     req.on('timeout', () => {
-      debug('API request timeout');
+      debug('API request timeout (5s)');
       req.destroy();
-      resolve(null);
+      resolve({ error: 'timeout' });
     });
 
     req.end();

@@ -61,7 +61,7 @@ describe('getUsage', () => {
       homeDir: () => tempHome,
       fetchApi: async () => {
         fetchCalls += 1;
-        return null;
+        return { error: 'should not be called' };
       },
       now: () => 1000,
       readKeychain: () => null, // Disable Keychain for tests
@@ -78,7 +78,7 @@ describe('getUsage', () => {
       homeDir: () => tempHome,
       fetchApi: async () => {
         fetchCalls += 1;
-        return buildApiResponse();
+        return { response: buildApiResponse() };
       },
       now: () => 1000,
       readKeychain: () => null,
@@ -95,7 +95,7 @@ describe('getUsage', () => {
       homeDir: () => tempHome,
       fetchApi: async () => {
         fetchCalls += 1;
-        return buildApiResponse();
+        return { response: buildApiResponse() };
       },
       now: () => 1000,
       readKeychain: () => null,
@@ -112,7 +112,7 @@ describe('getUsage', () => {
       homeDir: () => tempHome,
       fetchApi: async () => {
         fetchCalls += 1;
-        return buildApiResponse();
+        return { response: buildApiResponse() };
       },
       now: () => 1000,
       readKeychain: () => null,
@@ -129,7 +129,7 @@ describe('getUsage', () => {
       homeDir: () => tempHome,
       fetchApi: async (token) => {
         usedToken = token;
-        return buildApiResponse();
+        return { response: buildApiResponse() };
       },
       now: () => 1000,
       readKeychain: () => ({ accessToken: 'keychain-token', subscriptionType: 'claude_max_2024' }),
@@ -149,7 +149,7 @@ describe('getUsage', () => {
       homeDir: () => tempHome,
       fetchApi: async (token) => {
         usedToken = token;
-        return buildApiResponse();
+        return { response: buildApiResponse() };
       },
       now: () => 1000,
       readKeychain: () => ({ accessToken: 'keychain-token', subscriptionType: '' }),
@@ -168,7 +168,7 @@ describe('getUsage', () => {
       homeDir: () => tempHome,
       fetchApi: async () => {
         fetchCalls += 1;
-        return buildApiResponse();
+        return { response: buildApiResponse() };
       },
       now: () => 1000,
       readKeychain: () => ({ accessToken: 'keychain-token', subscriptionType: '' }),
@@ -186,7 +186,7 @@ describe('getUsage', () => {
       homeDir: () => tempHome,
       fetchApi: async () => {
         fetchCalls += 1;
-        return buildApiResponse();
+        return { response: buildApiResponse() };
       },
       now: () => 1000,
       readKeychain: () => null,
@@ -202,7 +202,7 @@ describe('getUsage', () => {
     await writeCredentials(tempHome, buildCredentials({ subscriptionType: 'claude_team_2024' }));
     const result = await getUsage({
       homeDir: () => tempHome,
-      fetchApi: async () => buildApiResponse(),
+      fetchApi: async () => ({ response: buildApiResponse() }),
       now: () => 1000,
       readKeychain: () => null,
     });
@@ -210,13 +210,13 @@ describe('getUsage', () => {
     assert.equal(result?.planName, 'Team');
   });
 
-  test('returns apiUnavailable and caches failures', async () => {
+  test('returns apiUnavailable with failureReason and caches failures', async () => {
     await writeCredentials(tempHome, buildCredentials());
     let fetchCalls = 0;
     let nowValue = 1000;
     const fetchApi = async () => {
       fetchCalls += 1;
-      return null;
+      return { error: 'HTTP 429' };
     };
 
     const first = await getUsage({
@@ -226,6 +226,7 @@ describe('getUsage', () => {
       readKeychain: () => null,
     });
     assert.equal(first?.apiUnavailable, true);
+    assert.equal(first?.failureReason, 'HTTP 429');
     assert.equal(fetchCalls, 1);
 
     nowValue += 10_000;
@@ -236,6 +237,7 @@ describe('getUsage', () => {
       readKeychain: () => null,
     });
     assert.equal(cached?.apiUnavailable, true);
+    assert.equal(cached?.failureReason, 'HTTP 429');
     assert.equal(fetchCalls, 1);
 
     nowValue += 6_000;
@@ -269,7 +271,7 @@ describe('getUsage caching behavior', () => {
     let nowValue = 1000;
     const fetchApi = async () => {
       fetchCalls += 1;
-      return buildApiResponse();
+      return { response: buildApiResponse() };
     };
 
     await getUsage({ homeDir: () => tempHome, fetchApi, now: () => nowValue, readKeychain: () => null });
@@ -290,7 +292,7 @@ describe('getUsage caching behavior', () => {
     let nowValue = 1000;
     const fetchApi = async () => {
       fetchCalls += 1;
-      return null;
+      return { error: 'HTTP 500' };
     };
 
     await getUsage({ homeDir: () => tempHome, fetchApi, now: () => nowValue, readKeychain: () => null });
@@ -310,7 +312,7 @@ describe('getUsage caching behavior', () => {
     let fetchCalls = 0;
     const fetchApi = async () => {
       fetchCalls += 1;
-      return buildApiResponse();
+      return { response: buildApiResponse() };
     };
 
     await getUsage({ homeDir: () => tempHome, fetchApi, now: () => 1000, readKeychain: () => null });

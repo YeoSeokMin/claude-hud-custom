@@ -58,6 +58,7 @@ export interface UsageData {
   fiveHourResetAt: Date | null;
   sevenDayResetAt: Date | null;
   apiUnavailable?: boolean; // true if API call failed (user should check DEBUG logs)
+  failureReason?: string;   // Specific reason for API failure (e.g., '429', 'timeout', 'network')
 }
 
 /** Check if usage limit is reached (either window at 100%) */

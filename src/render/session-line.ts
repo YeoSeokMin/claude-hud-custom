@@ -66,7 +66,8 @@ export function renderSessionLine(ctx: RenderContext): string {
     const sevenDayPct = padPercent(sevenDay, PERCENT_WIDTH);
     lines.push(`${sevenDayLabel} ${sevenDayPct} ${sevenDayBar}${resetText7d}`);
   } else if (ctx.usageData?.apiUnavailable) {
-    lines.push(yellow(`사용량 API 불가`));
+    const reason = ctx.usageData.failureReason ?? 'unknown';
+    lines.push(yellow(`사용량 API 불가 (${reason})`));
   }
 
   return lines.join('\n');
