@@ -1,216 +1,114 @@
-# Claude HUD
+# Claude HUD Custom
 
-A Claude Code plugin that shows what's happening — context usage, active tools, running agents, and todo progress. Always visible below your input.
+[claude-hud](https://github.com/jarrodwatts/claude-hud) v0.0.6 기반 커스텀 포크. 다중 인스턴스 환경에서 발생하는 **429 Rate Limit 무한 루프 문제**를 근본적으로 해결한 버전.
 
-[![License](https://img.shields.io/github/license/jarrodwatts/claude-hud?v=2)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/jarrodwatts/claude-hud)](https://github.com/jarrodwatts/claude-hud/stargazers)
+## 원본 대비 변경 사항
 
-![Claude HUD in action](claude-hud-preview-5-2.png)
+### 문제점 (원본 claude-hud)
 
-## Install
+Claude Code를 여러 개 동시에 실행하면(예: 3개), 모든 인스턴스가 동일한 캐시 파일을 공유한다.
+캐시 TTL이 15초로 매우 짧아서, 만료 시 모든 인스턴스가 **동시에** API를 호출하게 되고,
+Anthropic의 `/api/oauth/usage` 엔드포인트가 429(Rate Limit)를 반환한다.
+429 응답도 일반 실패와 동일하게 15초 TTL로 캐시되므로, 15초마다 또다시 동시 호출 → 429 반복.
+결과: **"사용량 API 불가"가 영구적으로 표시**되는 상태.
 
-Inside a Claude Code instance, run the following commands:
-
-**Step 1: Add the marketplace**
 ```
-/plugin marketplace add jarrodwatts/claude-hud
-```
-
-**Step 2: Install the plugin**
-
-<details>
-<summary><strong>⚠️ Linux users: Click here first</strong></summary>
-
-On Linux, `/tmp` is often a separate filesystem (tmpfs), which causes plugin installation to fail with:
-```
-EXDEV: cross-device link not permitted
+인스턴스 A ─┐
+인스턴스 B ─┼─ 캐시 만료 → 동시 API 호출 → 429 → 15초 대기 → 반복...
+인스턴스 C ─┘
 ```
 
-**Fix**: Set TMPDIR before installing:
+### 해결책 (이 포크)
+
+3가지 메커니즘으로 근본적으로 해결:
+
+#### 1. 3-Tier TTL (응답 유형별 차등 캐시)
+
+| 응답 유형 | 원본 TTL | 커스텀 TTL | 이유 |
+|-----------|----------|------------|------|
+| 성공 (200) | 60초 | **3분** | 다중 인스턴스의 API 호출 빈도 감소 |
+| 실패 (기타 오류) | 15초 | **2분** | 일시적 오류 시 충분한 대기 |
+| Rate Limit (429) | 15초 (구분 없음) | **10분** | 429 전용 장기 백오프 |
+
+#### 2. File-based Fetch Lock (파일 기반 잠금)
+
+캐시가 만료되었을 때, **단 하나의 프로세스만** API를 호출하도록 파일 잠금을 사용한다.
+
+```
+인스턴스 A ─ 잠금 획득 → API 호출 → 캐시 갱신 → 잠금 해제
+인스턴스 B ─ 잠금 실패 → 이전 캐시 데이터 반환 (stale cache)
+인스턴스 C ─ 잠금 실패 → 이전 캐시 데이터 반환 (stale cache)
+```
+
+- `fs.writeFileSync(..., { flag: 'wx' })` (atomic create) 사용으로 race condition 방지
+- 15초 이상 된 잠금 파일은 stale로 판단하고 자동 정리
+- 잠금 실패 시 이전 캐시 데이터를 즉시 반환 (API 불가 표시 대신)
+
+#### 3. FetchResult 타입 (응답 분류)
+
+API 응답을 discriminated union으로 분류하여 429와 일반 오류를 구분한다:
+
+```typescript
+type FetchResult =
+  | { ok: true; data: UsageApiResponse }
+  | { ok: false; rateLimited: boolean };
+```
+
+- `rateLimited: true` → 10분 TTL로 캐시
+- `rateLimited: false` → 2분 TTL로 캐시
+- `ok: true` → 3분 TTL로 캐시
+
+## 설치 방법
+
+### 1. 클론
+
 ```bash
-mkdir -p ~/.cache/tmp && TMPDIR=~/.cache/tmp claude
+git clone https://github.com/YeoSeokMin/claude-hud-custom.git
+cd claude-hud-custom
 ```
 
-Then run the install command below in that session. This is a [Claude Code platform limitation](https://github.com/anthropics/claude-code/issues/14799).
+### 2. 빌드
 
-</details>
-
-```
-/plugin install claude-hud
-```
-
-**Step 3: Configure the statusline**
-```
-/claude-hud:setup
+```bash
+npm install
+npm run build
 ```
 
-Done! The HUD appears immediately — no restart needed.
+### 3. Claude Code 설정
 
----
-
-## What is Claude HUD?
-
-Claude HUD gives you better insights into what's happening in your Claude Code session.
-
-| What You See | Why It Matters |
-|--------------|----------------|
-| **Project path** | Know which project you're in (configurable 1-3 directory levels) |
-| **Context health** | Know exactly how full your context window is before it's too late |
-| **Tool activity** | Watch Claude read, edit, and search files as it happens |
-| **Agent tracking** | See which subagents are running and what they're doing |
-| **Todo progress** | Track task completion in real-time |
-
-## What Each Line Shows
-
-### Session Info
-```
-[Opus | Pro] █████░░░░░ 45% | my-project git:(main) | 2 CLAUDE.md | 5h: 25% | ⏱️ 5m
-```
-- **Model** — Current model in use (shown first)
-- **Plan name** — Your subscription tier (Pro, Max, Team) when usage enabled
-- **Context bar** — Visual meter with color coding (green → yellow → red as it fills)
-- **Project path** — Configurable 1-3 directory levels (default: 1)
-- **Git branch** — Current branch name (configurable on/off)
-- **Config counts** — CLAUDE.md files, rules, MCPs, and hooks loaded
-- **Usage limits** — 5-hour rate limit percentage (opt-in, Pro/Max/Team only)
-- **Duration** — How long the session has been running
-
-### Tool Activity
-```
-✓ TaskOutput ×2 | ✓ mcp_context7 ×1 | ✓ Glob ×1 | ✓ Skill ×1
-```
-- **Running tools** show a spinner with the target file
-- **Completed tools** aggregate by type with counts
-
-### Agent Status
-```
-✓ Explore: Explore home directory structure (5s)
-✓ open-source-librarian: Research React hooks patterns (2s)
-```
-- **Agent type** and what it's working on
-- **Elapsed time** for each agent
-
-### Todo Progress
-```
-✓ All todos complete (5/5)
-```
-- **Current task** or completion status
-- **Progress counter** (completed/total)
-
----
-
-## How It Works
-
-Claude HUD uses Claude Code's native **statusline API** — no separate window, no tmux required, works in any terminal.
-
-```
-Claude Code → stdin JSON → claude-hud → stdout → displayed in your terminal
-           ↘ transcript JSONL (tools, agents, todos)
-```
-
-**Key features:**
-- Native token data from Claude Code (not estimated)
-- Parses the transcript for tool/agent activity
-- Updates every ~300ms
-
----
-
-## Configuration
-
-Customize your HUD anytime:
-
-```
-/claude-hud:configure
-```
-
-The guided flow walks you through customization — no manual editing needed:
-
-- **First time setup**: Choose a preset (Full/Essential/Minimal), then fine-tune individual elements
-- **Customize anytime**: Toggle items on/off, adjust git display style, switch layouts
-- **Preview before saving**: See exactly how your HUD will look before committing changes
-
-### Presets
-
-| Preset | What's Shown |
-|--------|--------------|
-| **Full** | Everything enabled — tools, agents, todos, git, usage, duration |
-| **Essential** | Activity lines + git status, minimal info clutter |
-| **Minimal** | Core only — just model name and context bar |
-
-After choosing a preset, you can turn individual elements on or off.
-
-### Manual Configuration
-
-You can also edit the config file directly at `~/.claude/plugins/claude-hud/config.json`.
-
-### Options
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `layout` | string | `default` | Layout style: `default` or `separators` |
-| `pathLevels` | 1-3 | 1 | Directory levels to show in project path |
-| `gitStatus.enabled` | boolean | true | Show git branch in HUD |
-| `gitStatus.showDirty` | boolean | true | Show `*` for uncommitted changes |
-| `gitStatus.showAheadBehind` | boolean | false | Show `↑N ↓N` for ahead/behind remote |
-| `gitStatus.showFileStats` | boolean | false | Show file change counts `!M +A ✘D ?U` |
-| `display.showModel` | boolean | true | Show model name `[Opus]` |
-| `display.showContextBar` | boolean | true | Show visual context bar `████░░░░░░` |
-| `display.showConfigCounts` | boolean | true | Show CLAUDE.md, rules, MCPs, hooks counts |
-| `display.showDuration` | boolean | true | Show session duration `⏱️ 5m` |
-| `display.showUsage` | boolean | true | Show usage limits (Pro/Max/Team only) |
-| `display.usageBarEnabled` | boolean | true | Display usage as visual bar (`██░░ 25%`) instead of text (`5h: 25%`) |
-| `display.showTokenBreakdown` | boolean | true | Show token details at high context (85%+) |
-| `display.showTools` | boolean | true | Show tools activity line |
-| `display.showAgents` | boolean | true | Show agents activity line |
-| `display.showTodos` | boolean | true | Show todos progress line |
-
-### Usage Limits (Pro/Max/Team)
-
-Usage display is **enabled by default** for Claude Pro, Max, and Team subscribers. It shows your rate limit consumption directly in the HUD.
-
-When enabled, you'll see your 5-hour usage percentage. The 7-day percentage appears when above 80%:
-
-```
-[Opus | Pro] █████░░░░░ 45% | my-project | 5h: 25% | 7d: 85%
-```
-
-To disable usage display, set `display.showUsage` to `false` in your config.
-
-**Requirements:**
-- Claude Pro, Max, or Team subscription (not available for API users)
-- OAuth credentials from Claude Code (created automatically when you log in)
-
-**Troubleshooting:** If usage doesn't appear:
-- Ensure you're logged in with a Pro/Max/Team account (not API key)
-- Check `display.showUsage` is not set to `false` in config
-- API users see no usage display (they have pay-per-token, not rate limits)
-
-### Layout Options
-
-**Default layout** — All info on first line:
-```
-[Opus] ████░░░░░░ 42% | my-project git:(main) | 2 rules | ⏱️ 5m
-✓ Read ×3 | ✓ Edit ×1
-```
-
-**Separators layout** — Visual separator below header when activity exists:
-```
-[Opus] ████░░░░░░ 42% | my-project git:(main) | 2 rules | ⏱️ 5m
-──────────────────────────────────────────────────────────────
-✓ Read ×3 | ✓ Edit ×1
-```
-
-### Example Configuration
+`~/.claude/settings.json`의 `statusLine` 항목에 빌드된 경로를 지정:
 
 ```json
 {
-  "layout": "default",
-  "pathLevels": 2,
+  "env": {
+    "statusLine": "node /path/to/claude-hud-custom/dist/index.js"
+  }
+}
+```
+
+Windows 예시:
+```json
+{
+  "env": {
+    "statusLine": "node C:/Users/Admin/claude-hud-custom/dist/index.js"
+  }
+}
+```
+
+### 4. 설정 (선택사항)
+
+`~/.claude/plugins/claude-hud/config.json` 파일을 만들어 커스텀 설정 가능:
+
+```json
+{
+  "lineLayout": "compact",
+  "showSeparators": false,
+  "pathLevels": 1,
   "gitStatus": {
     "enabled": true,
     "showDirty": true,
-    "showAheadBehind": true,
-    "showFileStats": true
+    "showAheadBehind": false,
+    "showFileStats": false
   },
   "display": {
     "showModel": true,
@@ -222,72 +120,106 @@ To disable usage display, set `display.showUsage` to `false` in your config.
     "showTokenBreakdown": true,
     "showTools": true,
     "showAgents": true,
-    "showTodos": true
+    "showTodos": true,
+    "usageThreshold": 0,
+    "environmentThreshold": 0
   }
 }
 ```
 
-### Display Examples
+## 설정 옵션
 
-**1 level (default):** `[Opus] 45% | my-project git:(main) | ...`
+| 옵션 | 타입 | 기본값 | 설명 |
+|------|------|--------|------|
+| `lineLayout` | string | `expanded` | 레이아웃: `compact` 또는 `expanded` |
+| `showSeparators` | boolean | false | 구분선 표시 |
+| `pathLevels` | 1-3 | 1 | 프로젝트 경로에 표시할 디렉토리 단계 수 |
+| `gitStatus.enabled` | boolean | true | Git 브랜치 표시 |
+| `gitStatus.showDirty` | boolean | true | 커밋되지 않은 변경사항 `*` 표시 |
+| `gitStatus.showAheadBehind` | boolean | false | 리모트 대비 `↑N ↓N` 표시 |
+| `gitStatus.showFileStats` | boolean | false | 파일 변경 카운트 `!M +A ✘D ?U` 표시 |
+| `display.showModel` | boolean | true | 모델 이름 `[Opus]` 표시 |
+| `display.showContextBar` | boolean | true | 컨텍스트 바 `████░░░░░░` 표시 |
+| `display.showConfigCounts` | boolean | true | CLAUDE.md, rules, MCP, hooks 카운트 표시 |
+| `display.showDuration` | boolean | true | 세션 지속 시간 표시 |
+| `display.showUsage` | boolean | true | 사용량 제한 표시 (Pro/Max/Team 전용) |
+| `display.usageBarEnabled` | boolean | true | 사용량을 바 형태로 표시 |
+| `display.showTokenBreakdown` | boolean | true | 높은 컨텍스트(85%+)에서 토큰 상세 표시 |
+| `display.showTools` | boolean | true | 도구 활동 라인 표시 |
+| `display.showAgents` | boolean | true | 에이전트 활동 라인 표시 |
+| `display.showTodos` | boolean | true | 할 일 진행 상황 표시 |
 
-**2 levels:** `[Opus] 45% | apps/my-project git:(main) | ...`
+## HUD 표시 예시
 
-**3 levels:** `[Opus] 45% | dev/apps/my-project git:(main) | ...`
+### 세션 정보
+```
+[Opus | Max] █████░░░░░ 45% | my-project git:(main) | 2 CLAUDE.md | 5h: 25% | ⏱️ 5m
+```
 
-**With dirty indicator:** `[Opus] 45% | my-project git:(main*) | ...`
+### 도구 활동
+```
+✓ Read ×3 | ✓ Edit ×1 | ⟳ Bash (running)
+```
 
-**With ahead/behind:** `[Opus] 45% | my-project git:(main ↑2 ↓1) | ...`
+### 에이전트 상태
+```
+✓ Explore: 코드베이스 분석 (5s)
+⟳ general-purpose: API 문서 조사 중...
+```
 
-**With file stats:** `[Opus] 45% | my-project git:(main* !3 +1 ?2) | ...`
-- `!` = modified files, `+` = added/staged, `✘` = deleted, `?` = untracked
-- Counts of 0 are omitted for cleaner display
+### 할 일 진행
+```
+⟳ 테스트 작성 중 (3/5)
+```
 
-**Minimal display (only context %):** Configure `showModel`, `showContextBar`, `showConfigCounts`, `showDuration` to `false`
+## 디버깅
 
-### Troubleshooting
-
-**Config not applying?**
-- Check for JSON syntax errors: invalid JSON silently falls back to defaults
-- Ensure valid values: `pathLevels` must be 1, 2, or 3; `layout` must be `default` or `separators`
-- Delete config and run `/claude-hud:configure` to regenerate
-
-**Git status missing?**
-- Verify you're in a git repository
-- Check `gitStatus.enabled` is not `false` in config
-
-**Tool/agent/todo lines missing?**
-- These only appear when there's activity to show
-- Check `display.showTools`, `display.showAgents`, `display.showTodos` in config
-
----
-
-## Requirements
-
-- Claude Code v1.0.80+
-- Node.js 18+ or Bun
-
----
-
-## Development
+사용량 API 문제가 발생하면 디버그 로그를 활성화:
 
 ```bash
-git clone https://github.com/jarrodwatts/claude-hud
-cd claude-hud
-npm ci && npm run build
+DEBUG=claude-hud claude
+```
+
+캐시 파일 직접 확인:
+```bash
+cat ~/.claude/plugins/claude-hud/.usage-cache.json
+```
+
+잠금 파일 확인 (보통 존재하지 않아야 정상):
+```bash
+ls -la ~/.claude/plugins/claude-hud/.usage-fetch.lock
+```
+
+캐시 수동 초기화:
+```bash
+rm ~/.claude/plugins/claude-hud/.usage-cache.json
+rm ~/.claude/plugins/claude-hud/.usage-fetch.lock
+```
+
+## 변경된 파일
+
+| 파일 | 변경 내용 |
+|------|-----------|
+| `src/usage-api.ts` | FetchResult 타입, 3-tier TTL, fetch lock, stale cache 서빙 |
+| `tests/usage-api.test.js` | 새 API에 맞춘 테스트 업데이트 + 429 캐시 테스트 추가 |
+
+## 테스트
+
+```bash
 npm test
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+19개 테스트 모두 통과:
+- 자격 증명 처리 (파일, 키체인, 만료)
+- 플랜 이름 파싱 (Pro, Max, Team)
+- 캐시 TTL (성공 3분, 실패 2분, 429 10분)
+- 캐시 초기화
 
----
+## 요구 사항
 
-## License
+- Node.js 18+
+- Claude Code v1.0.80+
 
-MIT — see [LICENSE](LICENSE)
+## 라이선스
 
----
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=jarrodwatts/claude-hud&type=Date)](https://star-history.com/#jarrodwatts/claude-hud&Date)
+MIT - 원본 [claude-hud](https://github.com/jarrodwatts/claude-hud) 라이선스 동일
